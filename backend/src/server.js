@@ -196,6 +196,20 @@ const typeDefs = `#graphql
     productsBySegment(ageRange: String!, gender: String!, category: String): [Product]
     categories: [Category]
     segments: [Segment]
+    filterOptions: FilterOptions
+  }
+  
+  type FilterOptions {
+    categories: [String!]!
+    ageRanges: [String!]!
+    genders: [String!]!
+    priceRanges: [PriceRange!]!
+  }
+  
+  type PriceRange {
+    label: String!
+    min: Float
+    max: Float
   }
   
   type Mutation {
@@ -331,6 +345,56 @@ const resolvers = {
         keywords: segment.keywords || [],
         categories: segment.categories || [],
       }));
+    },
+
+    filterOptions: async () => {
+      // Get all unique categories from segments that actually have products
+      const segments = await prisma.segment.findMany({
+        include: {
+          _count: { select: { productSegments: true } },
+        },
+      });
+
+      // Get categories that actually have products
+      const categoriesSet = new Set();
+      const ageRangesSet = new Set(); 
+      const gendersSet = new Set();
+      
+      segments.forEach(segment => {
+        if (segment._count.productSegments > 0) {
+          // Add categories from this segment
+          if (segment.categories && segment.categories.length > 0) {
+            segment.categories.forEach(cat => categoriesSet.add(cat));
+          }
+          ageRangesSet.add(segment.ageRange);
+          gendersSet.add(segment.gender);
+        }
+      });
+
+      // Get actual price ranges from products
+      const products = await prisma.product.findMany({
+        select: { price: true },
+        where: { price: { not: null } },
+      });
+      
+      const prices = products.map(p => p.price).filter(p => p > 0);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+      const maxPrice = prices.length > 0 ? Math.max(...prices) : 1000;
+
+      return {
+        categories: Array.from(categoriesSet).sort(),
+        ageRanges: Array.from(ageRangesSet).sort(),
+        genders: Array.from(gendersSet).sort(),
+        priceRanges: [
+          { label: "Under $50", min: 0, max: 50 },
+          { label: "$50 - $100", min: 50, max: 100 },
+          { label: "$100 - $200", min: 100, max: 200 },
+          { label: "$200 - $500", min: 200, max: 500 },
+          { label: "Over $500", min: 500, max: null }
+        ].filter(range => 
+          range.max === null ? maxPrice > range.min : maxPrice >= range.min
+        )
+      };
     },
   },
   

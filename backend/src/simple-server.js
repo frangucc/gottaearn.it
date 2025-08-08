@@ -229,6 +229,7 @@ const typeDefs = `#graphql
     image: String
     rating: Float
     ratingsTotal: Int
+    brand: String
     createdAt: String!
     categories: [Category]
   }
