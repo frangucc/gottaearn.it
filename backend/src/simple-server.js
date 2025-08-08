@@ -193,12 +193,32 @@ const typeDefs = `#graphql
   
   type Mutation {
     refreshSegments: RefreshSegmentsResult
+    deleteProduct(id: ID!): DeleteProductResult
+    updateProduct(id: ID!, input: UpdateProductInput!): UpdateProductResult
   }
   
   type RefreshSegmentsResult {
     success: Boolean!
     message: String!
     segmentCount: Int!
+  }
+  
+  type DeleteProductResult {
+    success: Boolean!
+    message: String!
+  }
+  
+  type UpdateProductResult {
+    success: Boolean!
+    message: String!
+    product: Product
+  }
+  
+  input UpdateProductInput {
+    brand: String
+    categories: [String!]
+    ageRanges: [String!]
+    gender: String
   }
   
   type Product {
@@ -356,6 +376,113 @@ const resolvers = {
           success: false,
           message: 'Failed to refresh segments',
           segmentCount: 0
+        };
+      }
+    },
+
+    deleteProduct: async (_, { id }) => {
+      try {
+        console.log(`🗑️ Deleting product with id: ${id}`);
+        
+        // Delete product segments first (cascade delete)
+        await prisma.productSegment.deleteMany({
+          where: { productId: id }
+        });
+        
+        // Delete the product
+        await prisma.product.delete({
+          where: { id }
+        });
+        
+        console.log(`✅ Successfully deleted product ${id}`);
+        return {
+          success: true,
+          message: 'Product deleted successfully'
+        };
+      } catch (error) {
+        console.error(`❌ Error deleting product ${id}:`, error);
+        return {
+          success: false,
+          message: `Failed to delete product: ${error.message}`
+        };
+      }
+    },
+
+    updateProduct: async (_, { id, input }) => {
+      try {
+        console.log(`✏️ Updating product ${id} with:`, input);
+        
+        // Update product brand if provided
+        const productUpdate = {};
+        if (input.brand) {
+          productUpdate.brand = input.brand;
+        }
+        
+        const updatedProduct = await prisma.product.update({
+          where: { id },
+          data: productUpdate,
+          include: { categories: true }
+        });
+        
+        // Handle segment updates if ageRanges and gender are provided
+        if (input.ageRanges && input.gender && input.categories) {
+          console.log(`🔄 Updating product segments...`);
+          
+          // Remove existing segment associations
+          await prisma.productSegment.deleteMany({
+            where: { productId: id }
+          });
+          
+          // Create new segment associations
+          for (const category of input.categories) {
+            for (const ageRange of input.ageRanges) {
+              // Find or create segment
+              let segment = await prisma.segment.findFirst({
+                where: {
+                  name: `${ageRange}_${input.gender}_${category}`,
+                  ageRange,
+                  gender: input.gender
+                }
+              });
+              
+              if (!segment) {
+                segment = await prisma.segment.create({
+                  data: {
+                    name: `${ageRange}_${input.gender}_${category}`,
+                    ageRange,
+                    gender: input.gender,
+                    categories: [category]
+                  }
+                });
+                console.log(`📝 Created new segment: ${segment.name}`);
+              }
+              
+              // Create product-segment link
+              await prisma.productSegment.create({
+                data: {
+                  productId: id,
+                  segmentId: segment.id,
+                  confidence: 0.9,
+                  reasoning: `User-edited segment assignment`
+                }
+              });
+            }
+          }
+        }
+        
+        console.log(`✅ Successfully updated product ${id}`);
+        return {
+          success: true,
+          message: 'Product updated successfully',
+          product: updatedProduct
+        };
+        
+      } catch (error) {
+        console.error(`❌ Error updating product ${id}:`, error);
+        return {
+          success: false,
+          message: `Failed to update product: ${error.message}`,
+          product: null
         };
       }
     },

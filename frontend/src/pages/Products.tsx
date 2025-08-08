@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@apollo/client';
-import { gql } from '@apollo/client';
+import { useQuery, useMutation, gql } from '@apollo/client';
 import { useSearchParams } from 'react-router-dom';
 import { 
   Search, 
@@ -11,10 +10,12 @@ import {
   ExternalLink,
   Edit,
   Trash2,
-  Package
+  Package,
+  X
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ProductSearchModal } from '../components/ProductSearchModal';
+import { ProductPreviewModal } from '../components/ProductPreviewModal';
 
 // GraphQL queries
 const GET_PRODUCTS = gql`
@@ -46,6 +47,7 @@ const GET_PRODUCTS_BY_SEGMENT = gql`
       title
       price
       image
+      brand
       rating
       ratingsTotal
       createdAt
@@ -54,6 +56,40 @@ const GET_PRODUCTS_BY_SEGMENT = gql`
         name
         ageGroup
         gender
+      }
+    }
+  }
+`;
+
+const DELETE_PRODUCT = gql`
+  mutation DeleteProduct($id: ID!) {
+    deleteProduct(id: $id) {
+      success
+      message
+    }
+  }
+`;
+
+const UPDATE_PRODUCT = gql`
+  mutation UpdateProduct($id: ID!, $input: UpdateProductInput!) {
+    updateProduct(id: $id, input: $input) {
+      success
+      message
+      product {
+        id
+        asin
+        title
+        price
+        image
+        brand
+        rating
+        createdAt
+        categories {
+          id
+          name
+          ageGroup
+          gender
+        }
       }
     }
   }
@@ -76,16 +112,20 @@ interface Product {
   }>;
 }
 
-function ProductCard({ product }: { product: Product }) {
+function ProductCard({ product, onEdit, onDelete }: { 
+  product: Product; 
+  onEdit: (product: Product) => void;
+  onDelete: (productId: string) => void;
+}) {
   const [showMenu, setShowMenu] = useState(false);
 
   const handleEdit = () => {
-    toast.success('Edit functionality coming soon!');
+    onEdit(product);
     setShowMenu(false);
   };
 
   const handleDelete = () => {
-    toast.error('Delete functionality coming soon!');
+    onDelete(product.id);
     setShowMenu(false);
   };
 
@@ -216,6 +256,8 @@ export function Products() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedAgeGroup, setSelectedAgeGroup] = useState('');
   const [selectedGender, setSelectedGender] = useState('');
@@ -253,6 +295,10 @@ export function Products() {
   const data = hasSegmentParams ? { products: segmentData?.productsBySegment || [] } : regularData;
   const loading = hasSegmentParams ? segmentLoading : regularLoading;
   const error = hasSegmentParams ? segmentError : regularError;
+  
+  // GraphQL mutations
+  const [deleteProductMutation] = useMutation(DELETE_PRODUCT);
+  const [updateProductMutation] = useMutation(UPDATE_PRODUCT);
   
   // Helper function to map AgeRange to AgeGroup enums
   const ageRangeToAgeGroup = (ageRange: string): string[] => {
@@ -295,6 +341,63 @@ export function Products() {
     // Refetch products to show newly added ones
     refetch();
     toast.success(`Successfully added ${count} products!`);
+  };
+
+  const handleDeleteProduct = async (productId: string) => {
+    try {
+      const result = await deleteProductMutation({
+        variables: { id: productId },
+        refetchQueries: [{ query: GET_PRODUCTS, variables: { limit: 20, offset: 0 } }]
+      });
+      
+      if (result.data?.deleteProduct?.success) {
+        toast.success('Product deleted successfully!');
+      } else {
+        toast.error(result.data?.deleteProduct?.message || 'Failed to delete product');
+      }
+    } catch (error) {
+      console.error('Error deleting product:', error);
+      toast.error('Failed to delete product');
+    }
+  };
+
+  const handleEditProduct = (product: Product) => {
+    setEditingProduct(product);
+    setShowEditModal(true);
+  };
+
+  const handleUpdateProduct = async (updatedData: any) => {
+    if (!editingProduct) return;
+    
+    try {
+      const result = await updateProductMutation({
+        variables: { 
+          id: editingProduct.id, 
+          input: updatedData 
+        },
+        refetchQueries: [{ query: GET_PRODUCTS, variables: { limit: 20, offset: 0 } }]
+      });
+      
+      if (result.data?.updateProduct?.success) {
+        toast.success('Product updated successfully!');
+        setShowEditModal(false);
+        setEditingProduct(null);
+      } else {
+        toast.error(result.data?.updateProduct?.message || 'Failed to update product');
+      }
+    } catch (error) {
+      console.error('Error updating product:', error);
+      toast.error('Failed to update product');
+    }
+  };
+
+  const handleClearFilters = () => {
+    setSelectedCategory('');
+    setSelectedAgeGroup('');
+    setSelectedGender('');
+    setSelectedPriceRange('');
+    setActiveAgeGroups([]);
+    setSearchTerm('');
   };
 
   const handleLoadMore = () => {
@@ -481,92 +584,108 @@ export function Products() {
             />
           </div>
           
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className="btn-outline"
-          >
-            <Filter className="w-4 h-4 mr-2" />
-            Filters
-          </button>
-        </div>
+          <div className="flex space-x-2 mb-4">
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className="btn btn-secondary"
+            >
+              <Filter className="w-4 h-4 mr-2" />
+              {showFilters ? 'Hide' : 'Show'} Filters
+            </button>
+            {hasActiveFilters && (
+              <button
+                onClick={handleClearFilters}
+                className="btn btn-outline"
+              >
+                <X className="w-4 h-4 mr-2" />
+                Clear Filters
+              </button>
+            )}
+          </div>
 
-        {showFilters && (
-          <div className="mt-4 pt-4 border-t border-gray-200">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div>
-                <label className="label">Category</label>
-                <select 
-                  className="input"
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                >
-                  <option value="">All Categories</option>
-                  <option value="gaming">Gaming</option>
-                  <option value="fashion">Fashion</option>
-                  <option value="electronics">Electronics</option>
-                  <option value="toys">Toys</option>
-                  <option value="books">Books</option>
-                  <option value="sports">Sports</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="label">Age Group</label>
-                <select 
-                  className="input"
-                  value={selectedAgeGroup}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setSelectedAgeGroup(val);
-                    setActiveAgeGroups(val ? [val] : []);
-                  }}
-                >
-                  <option value="">All Ages</option>
-                  <option value="AGE_10_12">Ages 10-12</option>
-                  <option value="AGE_13_15">Ages 13-15</option>
-                  <option value="AGE_16_18">Ages 16-18</option>
-                  <option value="AGE_19_21">Ages 19-21</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="label">Gender</label>
-                <select 
-                  className="input"
-                  value={selectedGender}
-                  onChange={(e) => setSelectedGender(e.target.value)}
-                >
-                  <option value="">All Genders</option>
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
-                  <option value="unisex">Unisex</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="label">Price Range</label>
-                <select 
-                  className="input"
-                  value={selectedPriceRange}
-                  onChange={(e) => setSelectedPriceRange(e.target.value)}
-                >
-                  <option value="">Any Price</option>
-                  <option value="0-25">$0 - $25</option>
-                  <option value="25-50">$25 - $50</option>
-                  <option value="50-100">$50 - $100</option>
-                  <option value="100+">$100+</option>
-                </select>
+          {showFilters && (
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <label className="label">Category</label>
+                  <select 
+                    className="input"
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                  >
+                    <option value="">All Categories</option>
+                    <option value="gaming">Gaming</option>
+                    <option value="fashion">Fashion</option>
+                    <option value="electronics">Electronics</option>
+                    <option value="toys">Toys</option>
+                    <option value="books">Books</option>
+                    <option value="sports">Sports</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="label">Age Group</label>
+                  <select 
+                    className="input"
+                    value={selectedAgeGroup}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSelectedAgeGroup(val);
+                      setActiveAgeGroups(val ? [val] : []);
+                    }}
+                  >
+                    <option value="">All Ages</option>
+                    <option value="AGE_10_12">Ages 10-12</option>
+                    <option value="AGE_13_15">Ages 13-15</option>
+                    <option value="AGE_16_18">Ages 16-18</option>
+                    <option value="AGE_19_21">Ages 19-21</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="label">Gender</label>
+                  <select 
+                    className="input"
+                    value={selectedGender}
+                    onChange={(e) => setSelectedGender(e.target.value)}
+                  >
+                    <option value="">All Genders</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="unisex">Unisex</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="label">Price Range</label>
+                  <select 
+                    className="input"
+                    value={selectedPriceRange}
+                    onChange={(e) => setSelectedPriceRange(e.target.value)}
+                  >
+                    <option value="">Any Price</option>
+                    <option value="0-25">$0 - $25</option>
+                    <option value="25-50">$25 - $50</option>
+                    <option value="50-100">$50 - $100</option>
+                    <option value="100+">$100+</option>
+                  </select>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Products List */}
       {filteredProducts.length > 0 ? (
         <div className="space-y-4">
           {filteredProducts.map((product: Product) => (
-            <ProductCard key={product.id} product={product} />
+            <ProductCard
+              key={product.asin}
+              product={product}
+              onEdit={handleEditProduct}
+              onDelete={handleDeleteProduct}
+            />
           ))}
           
           {/* Load More Button */}
@@ -609,11 +728,35 @@ export function Products() {
       )}
       
       {/* Product Search Modal */}
-      <ProductSearchModal
-        isOpen={showSearchModal}
-        onClose={() => setShowSearchModal(false)}
-        onProductsAdded={handleProductsAdded}
-      />
+      {showSearchModal && (
+        <ProductSearchModal
+          isOpen={showSearchModal}
+          onClose={() => setShowSearchModal(false)}
+          onProductsAdded={handleProductsAdded}
+        />
+      )}
+      
+      {showEditModal && editingProduct && (
+        <ProductPreviewModal
+          products={[editingProduct]}
+          isOpen={showEditModal}
+          onClose={() => {
+            setShowEditModal(false);
+            setEditingProduct(null);
+          }}
+          onConfirm={(productsWithSegmentation) => {
+            if (productsWithSegmentation.length > 0) {
+              const product = productsWithSegmentation[0];
+              handleUpdateProduct({
+                brand: product.brand,
+                categories: product.selectedCategories,
+                ageRanges: product.selectedAgeRanges,
+                gender: product.selectedGender
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
