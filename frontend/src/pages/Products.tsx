@@ -61,6 +61,21 @@ const GET_PRODUCTS_BY_SEGMENT = gql`
   }
 `;
 
+const GET_FILTER_OPTIONS = gql`
+  query GetFilterOptions {
+    filterOptions {
+      categories
+      ageRanges
+      genders
+      priceRanges {
+        label
+        min
+        max
+      }
+    }
+  }
+`;
+
 const DELETE_PRODUCT = gql`
   mutation DeleteProduct($id: ID!) {
     deleteProduct(id: $id) {
@@ -290,6 +305,9 @@ export function Products() {
     skip: hasSegmentParams,
     notifyOnNetworkStatusChange: true,
   });
+
+  // Get dynamic filter options
+  const { data: filterOptionsData } = useQuery(GET_FILTER_OPTIONS);
   
   // Use the appropriate data source
   const data = hasSegmentParams ? { products: segmentData?.productsBySegment || [] } : regularData;
@@ -457,69 +475,12 @@ export function Products() {
     console.log('All product categories:', products.map((p: Product) => p.categories.map(c => c.name)).flat());
   }
   
+  // Apply text search and price filters (segment filtering handles category/gender/age)
   const filteredProducts = products.filter((product: Product) => {
     // Text search filter
-    const matchesSearch = product.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    const matchesSearch = !searchTerm || 
+      product.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       product.asin.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    // Category filter - if product has no categories, show all products when no specific category is selected
-    const matchesCategory = !selectedCategory || 
-      (product.categories?.length > 0 ? 
-        product.categories.some(cat => {
-          const catName = cat.name.toLowerCase();
-          const selectedCat = selectedCategory.toLowerCase();
-          
-          // Direct matches
-          if (catName.includes(selectedCat) || selectedCat.includes(catName)) {
-            return true;
-          }
-          
-          // General products match any category
-          if (catName === 'general') {
-            return true;
-          }
-          
-          // Related category mappings
-          const categoryMappings: Record<string, string[]> = {
-            'toys': ['gaming', 'collectibles', 'building'],
-            'gaming': ['toys', 'collectibles', 'entertainment'],
-            'beauty': ['cosmetics', 'skincare', 'fragrance'],
-            'fashion': ['clothing', 'accessories', 'jewelry']
-          };
-          
-          const relatedCategories = categoryMappings[selectedCat] || [];
-          return relatedCategories.some((related: string) => catName.includes(related));
-        })
-        : true // Products without categories match all category filters
-      );
-    
-    // Gender filter - if product has no categories, ignore gender filter
-    const matchesGender = !selectedGender ||
-      (product.categories?.length > 0 ? 
-        product.categories.some(cat => 
-          cat.gender && (
-            cat.gender.toLowerCase() === selectedGender.toLowerCase() ||
-            cat.gender.toLowerCase() === 'unisex'
-          )
-        )
-        : true // Products without categories match all gender filters
-      );
-    
-    // Age group filter - if product has no categories, ignore age filter
-    const matchesAgeGroup = activeAgeGroups.length === 0 || 
-      (product.categories?.length > 0 ? 
-        product.categories.some(cat => {
-          if (!cat.ageGroup) return false;
-          const productAgeGroup = String(cat.ageGroup).toUpperCase();
-          
-          // Check if any active age ranges map to this product's age group
-          return activeAgeGroups.some(ageRange => {
-            const mappedAgeGroups = ageRangeToAgeGroup(ageRange);
-            return mappedAgeGroups.some(mapped => mapped.toUpperCase() === productAgeGroup);
-          });
-        })
-        : true // Products without categories match all age filters
-      );
     
     // Price filter
     const matchesPrice = !selectedPriceRange || (() => {
@@ -530,20 +491,7 @@ export function Products() {
       return product.price >= min && (max === Infinity || product.price <= max);
     })();
     
-    const result = matchesSearch && matchesCategory && matchesGender && matchesAgeGroup && matchesPrice;
-    
-    // Debug logging for first few products when filters are active
-    if ((selectedCategory || selectedGender) && products.indexOf(product) < 3) {
-      console.log(`Product: ${product.title}`);
-      console.log(`  Categories: ${product.categories.map(c => c.name).join(', ')}`);
-      console.log(`  Genders: ${product.categories.map(c => c.gender).join(', ')}`);
-      console.log(`  AgeGroups: ${product.categories.map(c => c.ageGroup).join(', ')}`);
-      console.log(`  ActiveAgeGroups: ${activeAgeGroups.join(', ')}`);
-      console.log(`  MappedAgeGroups: ${activeAgeGroups.map(ar => ageRangeToAgeGroup(ar).join('|')).join(', ')}`);
-      console.log(`  Matches - Category: ${matchesCategory}, Gender: ${matchesGender}, AgeGroup: ${matchesAgeGroup}, Overall: ${result}`);
-    }
-    
-    return result;
+    return matchesSearch && matchesPrice;
   });
   
   const hasActiveFilters = Boolean(selectedCategory || selectedGender || selectedAgeGroup || selectedPriceRange || searchTerm);
@@ -614,12 +562,9 @@ export function Products() {
                     onChange={(e) => setSelectedCategory(e.target.value)}
                   >
                     <option value="">All Categories</option>
-                    <option value="gaming">Gaming</option>
-                    <option value="fashion">Fashion</option>
-                    <option value="electronics">Electronics</option>
-                    <option value="toys">Toys</option>
-                    <option value="books">Books</option>
-                    <option value="sports">Sports</option>
+                    {filterOptionsData?.filterOptions?.categories?.map((category: string) => (
+                      <option key={category} value={category}>{category}</option>
+                    ))}
                   </select>
                 </div>
                 
@@ -635,10 +580,10 @@ export function Products() {
                     }}
                   >
                     <option value="">All Ages</option>
-                    <option value="AGE_10_12">Ages 10-12</option>
-                    <option value="AGE_13_15">Ages 13-15</option>
-                    <option value="AGE_16_18">Ages 16-18</option>
-                    <option value="AGE_19_21">Ages 19-21</option>
+                    {filterOptionsData?.filterOptions?.ageRanges?.map((ageRange: string) => {
+                      const label = ageRange.replace('AGE_', '').replace('_', '-');
+                      return <option key={ageRange} value={ageRange}>Ages {label}</option>;
+                    })}
                   </select>
                 </div>
                 
@@ -650,9 +595,11 @@ export function Products() {
                     onChange={(e) => setSelectedGender(e.target.value)}
                   >
                     <option value="">All Genders</option>
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                    <option value="unisex">Unisex</option>
+                    {filterOptionsData?.filterOptions?.genders?.map((gender: string) => (
+                      <option key={gender} value={gender.toLowerCase()}>
+                        {gender.charAt(0) + gender.slice(1).toLowerCase()}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 
@@ -664,10 +611,10 @@ export function Products() {
                     onChange={(e) => setSelectedPriceRange(e.target.value)}
                   >
                     <option value="">Any Price</option>
-                    <option value="0-25">$0 - $25</option>
-                    <option value="25-50">$25 - $50</option>
-                    <option value="50-100">$50 - $100</option>
-                    <option value="100+">$100+</option>
+                    {filterOptionsData?.filterOptions?.priceRanges?.map((priceRange: any) => {
+                      const value = priceRange.max ? `${priceRange.min}-${priceRange.max}` : `${priceRange.min}+`;
+                      return <option key={value} value={value}>{priceRange.label}</option>;
+                    })}
                   </select>
                 </div>
               </div>

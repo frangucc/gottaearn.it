@@ -1,4 +1,4 @@
-// Simple GottaEarn.it Backend Server (without Redis)
+// GottaEarn.it Backend Server
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -8,22 +8,17 @@ import { ApolloServer } from '@apollo/server';
 import { expressMiddleware } from '@apollo/server/express4';
 import { createServer } from 'http';
 import { prisma } from './lib/prisma.js';
-import { jobProcessorService } from './services/job-processor.service.js';
+import { initSentry } from '../../config/sentry.config.js';
+import { httpLogger } from '../../config/logging.config.js';
+import { dynamicRateLimit } from '../../config/rate-limit.config.js';
+import { cacheManager } from '../../config/cache.config.js';
 import productSearchRoutes from './routes/product-search.routes.js';
-// import { 
-//   // Initialize Sentry for error monitoring
-//   // initSentry(); 
-// } from '../../config/sentry.config.js';
-// import { httpLogger } from '../../config/logging.config.js';
-// import { dynamicRateLimit } from '../../config/rate-limit.config.js';
-// import { cacheManager } from '../../config/cache.config.js';
 
 // Load environment variables
-import path from 'path';
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.join(__dirname, '../../../.env') });
+dotenv.config({ path: '../.env' });
+
+// Initialize Sentry for error monitoring
+initSentry();
 
 const app = express();
 const httpServer = createServer(app);
@@ -37,8 +32,8 @@ app.use(compression());
 
 app.use(cors({
   origin: [
-    'http://localhost:7000',
-    'http://localhost:3000',
+    process.env.FRONTEND_URL || 'http://localhost:7000',
+    'http://localhost:3000', // For testing
   ],
   credentials: true,
 }));
@@ -46,15 +41,27 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Logging middleware
+app.use(httpLogger);
+
+// Rate limiting
+app.use(dynamicRateLimit);
+
 // Health check endpoint
 app.get('/health', async (req, res) => {
   try {
+    // Check database connection
     await prisma.$queryRaw`SELECT 1`;
+    
+    // Check cache connection
+    const cacheHealthy = await cacheManager.isHealthy();
+    
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       services: {
         database: 'connected',
+        cache: cacheHealthy ? 'connected' : 'disconnected',
       },
     });
   } catch (error) {
@@ -66,7 +73,7 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Basic REST// API routes
+// API routes
 app.use('/api/v1', (req, res, next) => {
   req.apiVersion = 'v1';
   res.set('API-Version', 'v1');
@@ -76,7 +83,7 @@ app.use('/api/v1', (req, res, next) => {
 // Product search routes
 app.use('/api/v1/products', productSearchRoutes);
 
-// Basic REST endpoints
+// Basic REST endpoints for testing
 app.get('/api/v1/test', (req, res) => {
   res.json({
     message: 'GottaEarn.it API is running!',
@@ -86,7 +93,7 @@ app.get('/api/v1/test', (req, res) => {
   });
 });
 
-// Products endpoint
+// Products endpoint (basic CRUD)
 app.get('/api/v1/products', async (req, res) => {
   try {
     const { limit = 20, offset = 0, categoryId, ageGroup } = req.query;
@@ -181,44 +188,38 @@ app.get('/api/v1/categories', async (req, res) => {
   }
 });
 
-// GraphQL setup
+// GraphQL setup (basic schema for now)
 const typeDefs = `#graphql
   type Query {
     hello: String
     products(limit: Int, offset: Int): [Product]
+    productsBySegment(ageRange: String!, gender: String!, category: String): [Product]
     categories: [Category]
     segments: [Segment]
-    productsBySegment(ageRange: String!, gender: String!, category: String): [Product]
+    filterOptions: FilterOptions
+  }
+  
+  type FilterOptions {
+    categories: [String!]!
+    ageRanges: [String!]!
+    genders: [String!]!
+    priceRanges: [PriceRange!]!
+  }
+  
+  type PriceRange {
+    label: String!
+    min: Float
+    max: Float
   }
   
   type Mutation {
     refreshSegments: RefreshSegmentsResult
-    deleteProduct(id: ID!): DeleteProductResult
-    updateProduct(id: ID!, input: UpdateProductInput!): UpdateProductResult
   }
   
   type RefreshSegmentsResult {
     success: Boolean!
     message: String!
-    segmentCount: Int!
-  }
-  
-  type DeleteProductResult {
-    success: Boolean!
-    message: String!
-  }
-  
-  type UpdateProductResult {
-    success: Boolean!
-    message: String!
-    product: Product
-  }
-  
-  input UpdateProductInput {
-    brand: String
-    categories: [String!]
-    ageRanges: [String!]
-    gender: String
+    segmentCount: Int
   }
   
   type Product {
@@ -229,7 +230,6 @@ const typeDefs = `#graphql
     image: String
     rating: Float
     ratingsTotal: Int
-    brand: String
     createdAt: String!
     categories: [Category]
   }
@@ -283,6 +283,53 @@ const resolvers = {
       }));
     },
     
+    productsBySegment: async (_, { ageRange, gender, category }) => {
+      console.log('productsBySegment query:', { ageRange, gender, category });
+      
+      // Find segments matching the criteria
+      const segmentWhere = {
+        ageRange,
+        gender,
+      };
+      
+      if (category) {
+        segmentWhere.categories = {
+          has: category,
+        };
+      }
+      
+      const segments = await prisma.segment.findMany({
+        where: segmentWhere,
+        include: {
+          productSegments: {
+            include: {
+              product: {
+                include: {
+                  categories: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      
+      // Extract unique products from all matching segments
+      const productIds = new Set();
+      const products = [];
+      
+      segments.forEach(segment => {
+        segment.productSegments.forEach(ps => {
+          if (!productIds.has(ps.product.id)) {
+            productIds.add(ps.product.id);
+            products.push(ps.product);
+          }
+        });
+      });
+      
+      console.log(`Found ${products.length} products for segment query`);
+      return products;
+    },
+
     segments: async () => {
       const segments = await prisma.segment.findMany({
         include: {
@@ -291,10 +338,7 @@ const resolvers = {
         orderBy: { createdAt: 'desc' },
       });
       
-      // Only show segments with products
-      const segmentsWithProducts = segments.filter(segment => segment._count.productSegments > 0);
-      
-      return segmentsWithProducts.map(segment => ({
+      return segments.map(segment => ({
         ...segment,
         productCount: segment._count.productSegments,
         ageRange: segment.ageRange,
@@ -302,60 +346,55 @@ const resolvers = {
         categories: segment.categories || [],
       }));
     },
-    
-    productsBySegment: async (_, { ageRange, gender, category }) => {
-      console.log(`🔍 Looking for segments with: ageRange=${ageRange}, gender=${gender}, category=${category}`);
-      
-      // Find the segment first
-      let segment = await prisma.segment.findFirst({
-        where: {
-          ageRange,
-          gender,
-          categories: category ? { has: category } : undefined,
+
+    filterOptions: async () => {
+      // Get all unique categories from segments that actually have products
+      const segments = await prisma.segment.findMany({
+        include: {
+          _count: { select: { productSegments: true } },
         },
       });
+
+      // Get categories that actually have products
+      const categoriesSet = new Set();
+      const ageRangesSet = new Set(); 
+      const gendersSet = new Set();
       
-      console.log(`Found segment:`, segment ? `${segment.name} (${segment.id})` : 'None');
-      
-      // If no segment found, let's see what segments exist
-      if (!segment) {
-        const allSegments = await prisma.segment.findMany();
-        console.log(`All segments in database:`, allSegments.map(s => ({
-          name: s.name,
-          ageRange: s.ageRange,
-          gender: s.gender,
-          categories: s.categories
-        })));
-      }
-      
-      // If no exact match, try without category filter
-      if (!segment && category) {
-        segment = await prisma.segment.findFirst({
-          where: {
-            ageRange,
-            gender,
-          },
-        });
-      }
-      
-      if (!segment) {
-        return [];
-      }
-      
-      // Get products assigned to this segment
+      segments.forEach(segment => {
+        if (segment._count.productSegments > 0) {
+          // Add categories from this segment
+          if (segment.categories && segment.categories.length > 0) {
+            segment.categories.forEach(cat => categoriesSet.add(cat));
+          }
+          ageRangesSet.add(segment.ageRange);
+          gendersSet.add(segment.gender);
+        }
+      });
+
+      // Get actual price ranges from products
       const products = await prisma.product.findMany({
-        where: {
-          segments: {
-            some: {
-              segmentId: segment.id,
-            },
-          },
-        },
-        include: { categories: true },
-        orderBy: { createdAt: 'desc' },
+        select: { price: true },
+        where: { price: { not: null } },
       });
       
-      return products;
+      const prices = products.map(p => p.price).filter(p => p > 0);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+      const maxPrice = prices.length > 0 ? Math.max(...prices) : 1000;
+
+      return {
+        categories: Array.from(categoriesSet).sort(),
+        ageRanges: Array.from(ageRangesSet).sort(),
+        genders: Array.from(gendersSet).sort(),
+        priceRanges: [
+          { label: "Under $50", min: 0, max: 50 },
+          { label: "$50 - $100", min: 50, max: 100 },
+          { label: "$100 - $200", min: 100, max: 200 },
+          { label: "$200 - $500", min: 200, max: 500 },
+          { label: "Over $500", min: 500, max: null }
+        ].filter(range => 
+          range.max === null ? maxPrice > range.min : maxPrice >= range.min
+        )
+      };
     },
   },
   
@@ -380,113 +419,6 @@ const resolvers = {
         };
       }
     },
-
-    deleteProduct: async (_, { id }) => {
-      try {
-        console.log(`🗑️ Deleting product with id: ${id}`);
-        
-        // Delete product segments first (cascade delete)
-        await prisma.productSegment.deleteMany({
-          where: { productId: id }
-        });
-        
-        // Delete the product
-        await prisma.product.delete({
-          where: { id }
-        });
-        
-        console.log(`✅ Successfully deleted product ${id}`);
-        return {
-          success: true,
-          message: 'Product deleted successfully'
-        };
-      } catch (error) {
-        console.error(`❌ Error deleting product ${id}:`, error);
-        return {
-          success: false,
-          message: `Failed to delete product: ${error.message}`
-        };
-      }
-    },
-
-    updateProduct: async (_, { id, input }) => {
-      try {
-        console.log(`✏️ Updating product ${id} with:`, input);
-        
-        // Update product brand if provided
-        const productUpdate = {};
-        if (input.brand) {
-          productUpdate.brand = input.brand;
-        }
-        
-        const updatedProduct = await prisma.product.update({
-          where: { id },
-          data: productUpdate,
-          include: { categories: true }
-        });
-        
-        // Handle segment updates if ageRanges and gender are provided
-        if (input.ageRanges && input.gender && input.categories) {
-          console.log(`🔄 Updating product segments...`);
-          
-          // Remove existing segment associations
-          await prisma.productSegment.deleteMany({
-            where: { productId: id }
-          });
-          
-          // Create new segment associations
-          for (const category of input.categories) {
-            for (const ageRange of input.ageRanges) {
-              // Find or create segment
-              let segment = await prisma.segment.findFirst({
-                where: {
-                  name: `${ageRange}_${input.gender}_${category}`,
-                  ageRange,
-                  gender: input.gender
-                }
-              });
-              
-              if (!segment) {
-                segment = await prisma.segment.create({
-                  data: {
-                    name: `${ageRange}_${input.gender}_${category}`,
-                    ageRange,
-                    gender: input.gender,
-                    categories: [category]
-                  }
-                });
-                console.log(`📝 Created new segment: ${segment.name}`);
-              }
-              
-              // Create product-segment link
-              await prisma.productSegment.create({
-                data: {
-                  productId: id,
-                  segmentId: segment.id,
-                  confidence: 0.9,
-                  reasoning: `User-edited segment assignment`
-                }
-              });
-            }
-          }
-        }
-        
-        console.log(`✅ Successfully updated product ${id}`);
-        return {
-          success: true,
-          message: 'Product updated successfully',
-          product: updatedProduct
-        };
-        
-      } catch (error) {
-        console.error(`❌ Error updating product ${id}:`, error);
-        return {
-          success: false,
-          message: `Failed to update product: ${error.message}`,
-          product: null
-        };
-      }
-    },
   },
 };
 
@@ -494,7 +426,8 @@ const resolvers = {
 const server = new ApolloServer({
   typeDefs,
   resolvers,
-  introspection: true,
+  introspection: process.env.NODE_ENV !== 'production',
+  playground: process.env.NODE_ENV !== 'production',
 });
 
 // Start server
@@ -507,32 +440,24 @@ async function startServer() {
       req,
       res,
       prisma,
-      user: req.user,
+      cache: cacheManager,
+      user: req.user, // Will be set by auth middleware
     }),
   }));
   
-  const PORT = process.env.PORT || 8080;
+  const PORT = process.env.PORT || 9000;
   
   httpServer.listen(PORT, () => {
     console.log(`🚀 GottaEarn.it Backend running on http://localhost:${PORT}`);
     console.log(`📊 GraphQL endpoint: http://localhost:${PORT}/api/v1/graphql`);
-    console.log(`🔍 Product search: http://localhost:${PORT}/api/v1/products/search`);
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    
-    // Start background job processor
-    jobProcessorService.start();
-    console.log(`⚙️ Background job processor started`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
   });
 }
 
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
-  
-  // Stop job processor
-  jobProcessorService.stop();
-  
   await prisma.$disconnect();
   httpServer.close(() => {
     console.log('Server closed');
@@ -540,8 +465,13 @@ process.on('SIGTERM', async () => {
   });
 });
 
-// Start server
-startServer().catch(error => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+// Export for testing
+export { app, server, startServer };
+
+// Start server if this file is run directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  startServer().catch(error => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  });
+}

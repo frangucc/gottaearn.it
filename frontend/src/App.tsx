@@ -12,13 +12,15 @@ import { Products } from './pages/Products';
 import { Categories } from './pages/Categories';
 import { Analytics } from './pages/Analytics';
 import { Settings } from './pages/Settings';
+import { ChatPage } from './pages/ChatPage';
+import ChatDebug from './pages/ChatDebugFixed';
 
 // Create React Query client
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 5 * 60 * 1000, // 5 minutes
-      cacheTime: 10 * 60 * 1000, // 10 minutes
+      gcTime: 10 * 60 * 1000, // 10 minutes (renamed from cacheTime)
       retry: 1,
       refetchOnWindowFocus: false,
     },
@@ -31,16 +33,22 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <Router>
           <div className="min-h-screen bg-gray-50">
-            <Layout>
-              <Routes>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/products" element={<Products />} />
-                <Route path="/categories" element={<Categories />} />
-                <Route path="/analytics" element={<Analytics />} />
-                <Route path="/settings" element={<Settings />} />
-              </Routes>
-            </Layout>
+            <Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/chat-debug" element={<ChatDebug />} />
+              <Route path="/*" element={
+                <Layout>
+                  <Routes>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/products" element={<Products />} />
+                    <Route path="/categories" element={<Categories />} />
+                    <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/chat" element={<ChatPage />} />
+                  </Routes>
+                </Layout>
+              } />
+            </Routes>
           </div>
           
           {/* Toast notifications */}

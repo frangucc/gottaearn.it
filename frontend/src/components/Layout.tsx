@@ -10,7 +10,8 @@ import {
   X,
   Search,
   Bell,
-  User
+  User,
+  MessageCircle
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -22,6 +23,7 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Products', href: '/products', icon: Package },
   { name: 'Categories', href: '/categories', icon: Tags },
+  { name: 'Chat Bot', href: '/chat', icon: MessageCircle },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

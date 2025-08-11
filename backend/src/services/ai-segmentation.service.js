@@ -1,11 +1,17 @@
 // AI Segmentation Service using Anthropic Claude
 import axios from 'axios';
+import { Anthropic } from '@anthropic-ai/sdk';
 import { prisma } from '../lib/prisma.js';
 
 class AISegmentationService {
   constructor() {
     this.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
     this.anthropicUrl = 'https://api.anthropic.com/v1/messages';
+    
+    // Initialize Anthropic client for chat service
+    this.client = new Anthropic({
+      apiKey: this.anthropicApiKey
+    });
     
     // Age range mapping
     this.ageRangeMap = {

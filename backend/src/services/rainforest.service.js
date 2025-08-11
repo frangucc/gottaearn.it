@@ -136,30 +136,45 @@ class RainforestService {
       };
     }
 
-    const products = rawResults.search_results.map(product => ({
-      asin: product.asin,
-      title: product.title,
-      price: product.price?.value || null,
-      priceString: product.price?.raw || null,
-      currency: product.price?.currency || 'USD',
-      image: product.image,
-      rating: product.rating || null,
-      ratingsTotal: product.ratings_total || null,
-      link: product.link,
-      isPrime: product.is_prime || false,
-      isBestseller: product.is_bestseller || false,
-      isAmazonChoice: product.is_amazon_choice || false,
-      brand: product.brand || null,
-      category: product.category?.name || null,
-      availability: product.availability?.raw || null,
-      // Additional metadata for AI processing
-      metadata: {
-        position: product.position,
-        sponsored: product.sponsored || false,
-        variations: product.variations || [],
-        features: product.feature_bullets || [],
-      }
-    }));
+    const products = rawResults.search_results.map(product => {
+      const imageUrl = product.image || product.images?.[0] || null;
+      console.log(`🖼️ Rainforest product image mapping:`, {
+        title: product.title?.substring(0, 50),
+        originalImage: product.image,
+        images: product.images?.length || 0,
+        mappedImageUrl: imageUrl
+      });
+      
+      return {
+        id: product.asin,  // Add id field for frontend key prop
+        asin: product.asin,
+        title: product.title,
+        price: product.price?.value || null,
+        formattedPrice: product.price?.raw || (product.price?.value ? `$${product.price.value.toFixed(2)}` : 'Price not available'),
+        priceString: product.price?.raw || null,
+        currency: product.price?.currency || 'USD',
+        image: imageUrl,
+        imageUrl: imageUrl,  // Add imageUrl for frontend compatibility
+        rating: product.rating || null,
+        ratingsTotal: product.ratings_total || null,
+        link: product.link,
+        url: product.link,  // Add url for frontend compatibility
+        isPrime: product.is_prime || false,
+        isBestseller: product.is_bestseller || false,
+        isAmazonChoice: product.is_amazon_choice || false,
+        brand: product.brand || null,
+        category: product.category?.name || null,
+        availability: product.availability?.raw || null,
+        isExternal: true,  // Mark as external product from Rainforest
+        // Additional metadata for AI processing
+        metadata: {
+          position: product.position,
+          sponsored: product.sponsored || false,
+          variations: product.variations || [],
+          features: product.feature_bullets || [],
+        }
+      };
+    });
 
     return {
       searchTerm,

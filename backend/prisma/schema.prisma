@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  // directUrl = env("DIRECT_URL")  // Temporarily commented out
 }
 
 // Auth.js required models
@@ -96,6 +96,7 @@ model Product {
   rankings        ProductRanking[]
   segments        ProductSegment[]     // AI-assigned segments
   processingJobs  ProductProcessingJob[] // Background processing jobs
+  chatInteractions ChatInteraction[]   // Chat-related interactions
 
   @@map("products")
 }
@@ -170,15 +171,75 @@ model ProductRanking {
 model ChatSession {
   id        String      @id @default(cuid())
   userId    String      @map("user_id")
-  messages  Json[]      // Array of message objects
-  context   Json?       // User context (age, preferences, etc.)
+  sessionId String      @unique @map("session_id") // For tracking multiple conversations
+  userAge   Int?        @map("user_age")
+  userGender Gender?    @map("user_gender") 
+  preferences Json?     // Shopping preferences, interests
+  context   Json?       // Session context (cart, viewed products, etc.)
+  status    ChatStatus  @default(ACTIVE)
+  totalMessages Int     @default(0) @map("total_messages")
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
 
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages    ChatMessage[]
+  interactions ChatInteraction[]
 
   @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id          String      @id @default(cuid())
+  chatSessionId String    @map("chat_session_id")
+  role        MessageRole // USER, ASSISTANT, SYSTEM
+  content     String      @db.Text
+  promptUsed  String?     @map("prompt_used") // Template/prompt ID used
+  contextData Json?       @map("context_data") // Products/segments passed to AI
+  aiModel     String?     @map("ai_model") // e.g., "claude-3-sonnet"
+  tokens      Int?        // Token usage for cost tracking
+  responseTime Int?       @map("response_time") // Response time in ms
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  chatSession   ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  interactions  ChatInteraction[]
+
+  @@map("chat_messages")
+}
+
+model ChatInteraction {
+  id            String           @id @default(cuid())
+  chatSessionId String           @map("chat_session_id")
+  messageId     String?          @map("message_id")
+  type          InteractionType  // PRODUCT_CLICK, PRODUCT_FAVORITE, SEARCH, PURCHASE_INTENT
+  productId     String?          @map("product_id")
+  segmentId     String?          @map("segment_id")
+  data          Json?            // Additional interaction data
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  chatSession ChatSession  @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  message     ChatMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  product     Product?     @relation(fields: [productId], references: [id], onDelete: SetNull)
+  segment     Segment?     @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+
+  @@map("chat_interactions")
+}
+
+model PromptTemplate {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g., "product_recommendation", "age_greeting"
+  description String?  @db.Text
+  template    String   @db.Text // Prompt template with placeholders
+  version     String   @default("1.0")
+  isActive    Boolean  @default(true) @map("is_active")
+  usageCount  Int      @default(0) @map("usage_count")
+  avgRating   Float?   @map("avg_rating") // User satisfaction rating
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("prompt_templates")
 }
 
 model Brand {
@@ -213,6 +274,7 @@ model Segment {
 
   // Relations
   productSegments ProductSegment[]
+  chatInteractions ChatInteraction[]
 
   @@unique([name, ageRange, gender])
   @@map("segments")
@@ -302,4 +364,30 @@ enum Gender {
   MALE
   FEMALE
   UNISEX
+}
+
+enum ChatStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ABANDONED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum InteractionType {
+  PRODUCT_CLICK
+  PRODUCT_FAVORITE
+  PRODUCT_SHARE
+  SEARCH_QUERY
+  PURCHASE_INTENT
+  SEGMENT_EXPLORATION
+  CONVERSATION_RATING
+  SESSION_START
+  SESSION_END
+  CONVERSATION_ANALYTICS
 }

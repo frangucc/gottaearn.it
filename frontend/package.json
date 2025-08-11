@@ -4,7 +4,9 @@
   "description": "GottaEarn.it Admin Dashboard",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/kill-port.js 7000",
     "dev": "vite --port 7000",
+    "dev:clean": "node scripts/kill-port.js 7000 && vite --port 7000",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
