@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, User, Bot, Loader2 } from 'lucide-react';
+import { Send, User, Bot, Loader2, Heart, ChevronRight } from 'lucide-react';
+
+interface DynamicPrompt {
+  text: string;
+  action: string;
+  value: any;
+}
 
 interface Message {
   id: string;
@@ -8,6 +14,8 @@ interface Message {
   timestamp: Date;
   products?: any[];
   rainforestProducts?: any[];
+  dynamicPrompts?: DynamicPrompt[];
+  searchId?: string;
 }
 
 interface DebugInfo {
@@ -28,6 +36,8 @@ const ChatDebug: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [debugLogs, setDebugLogs] = useState<DebugInfo[]>([]);
+  const [heartedItems, setHeartedItems] = useState<Set<string>>(new Set());
+  const [lastSearchId, setLastSearchId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const debugEndRef = useRef<HTMLDivElement>(null);
@@ -51,22 +61,36 @@ const ChatDebug: React.FC = () => {
 
   const startChat = async () => {
     try {
-      addDebugLog('Starting Chat Session', { anonymous: true });
+      addDebugLog('Starting Chat', { endpoint: 'http://localhost:9000/api/v1/chat/start' });
       
       const response = await fetch('http://localhost:9000/api/v1/chat/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          preferences: {},
-          initialIntent: 'browse'
+        body: JSON.stringify({ 
+          userAge: 25,
+          userGender: 'male'
         })
       });
 
       const data = await response.json();
-      addDebugLog('Chat Session Response', data);
+      addDebugLog('Chat Start Response', data);
 
       if (data.success) {
         setSession(data.session);
+        addDebugLog('Session Created', data.session);
+        
+        // Load hearted items for this session
+        try {
+          const heartResponse = await fetch(`http://localhost:9000/api/v1/heart/${data.session.sessionId}`);
+          const heartData = await heartResponse.json();
+          if (heartData.success && heartData.heartedItems) {
+            const heartedIds = heartData.heartedItems.map((item: any) => item.id || item.asin);
+            setHeartedItems(new Set(heartedIds));
+            addDebugLog('Hearted Items Loaded', { count: heartedIds.length });
+          }
+        } catch (error) {
+          console.error('Failed to load hearted items:', error);
+        }
         
         // Handle welcomeMessage - it might be an object or a string
         let welcomeContent = '';
@@ -94,6 +118,100 @@ const ChatDebug: React.FC = () => {
     } catch (error) {
       addDebugLog('Chat Start Error', { error: String(error) });
       console.error('Failed to start chat:', error);
+    }
+  };
+
+  // Heart/Unheart functionality
+  const toggleHeart = async (product: any) => {
+    if (!session) return;
+    
+    const productId = product.id || product.asin;
+    const isHearted = heartedItems.has(productId);
+    
+    try {
+      if (isHearted) {
+        // Unheart item
+        const response = await fetch('http://localhost:9000/api/v1/heart', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: session.sessionId,
+            productId
+          })
+        });
+        
+        if (response.ok) {
+          setHeartedItems(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(productId);
+            return newSet;
+          });
+          addDebugLog('💔 Item Unhearted', { productId, title: product.title });
+        }
+      } else {
+        // Heart item
+        const response = await fetch('http://localhost:9000/api/v1/heart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: session.sessionId,
+            product
+          })
+        });
+        
+        if (response.ok) {
+          setHeartedItems(prev => new Set([...prev, productId]));
+          addDebugLog('❤️ Item Hearted', { productId, title: product.title });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to toggle heart:', error);
+      addDebugLog('Heart Toggle Error', { error: String(error) });
+    }
+  };
+
+  // Handle dynamic prompt clicks
+  const handlePromptClick = async (prompt: DynamicPrompt) => {
+    if (!session || !lastSearchId) return;
+    
+    setIsLoading(true);
+    addDebugLog('🔍 Applying Filter', { action: prompt.action, value: prompt.value });
+    
+    try {
+      const response = await fetch('http://localhost:9000/api/v1/filter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: session.sessionId,
+          searchId: lastSearchId,
+          action: prompt.action,
+          value: prompt.value
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        const filteredMsg: Message = {
+          id: `filtered_${Date.now()}`,
+          role: 'ASSISTANT',
+          content: data.message,
+          products: data.products || [],
+          dynamicPrompts: data.dynamicPrompts || [],
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, filteredMsg]);
+        addDebugLog('✅ Filter Applied', { 
+          originalCount: data.originalCount,
+          filteredCount: data.filteredCount 
+        });
+      }
+    } catch (error) {
+      console.error('Failed to apply filter:', error);
+      addDebugLog('Filter Error', { error: String(error) });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -148,12 +266,19 @@ const ChatDebug: React.FC = () => {
         const content = response.content || response.message || '';
         const products = response.suggestedProducts || response.products || [];
         
+        // Store searchId if present
+        if (response.searchId) {
+          setLastSearchId(response.searchId);
+        }
+        
         const assistantMsg: Message = {
           id: `assistant_${Date.now()}`,
           role: 'ASSISTANT',
           content: typeof content === 'string' ? content : JSON.stringify(content),
           products: Array.isArray(products) ? products : [],
           rainforestProducts: Array.isArray(response.rainforestProducts) ? response.rainforestProducts : [],
+          dynamicPrompts: response.dynamicPrompts || [],
+          searchId: response.searchId,
           timestamp: new Date()
         };
 
@@ -254,6 +379,16 @@ const ChatDebug: React.FC = () => {
                           <p className="text-green-600 font-bold text-lg">${product.price}</p>
                           <p className="text-xs text-gray-500">Source: {product.source}</p>
                         </div>
+                        <button
+                          onClick={() => toggleHeart(product)}
+                          className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                          title={heartedItems.has(product.id || product.asin) ? "Remove from favorites" : "Add to favorites"}
+                        >
+                          <Heart
+                            size={20}
+                            className={heartedItems.has(product.id || product.asin) ? "text-red-500 fill-red-500" : "text-gray-400"}
+                          />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -281,8 +416,38 @@ const ChatDebug: React.FC = () => {
                           <p className="text-green-600 font-bold text-lg">${product.price}</p>
                           <p className="text-xs text-gray-500">Source: Rainforest API</p>
                         </div>
+                        <button
+                          onClick={() => toggleHeart(product)}
+                          className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                          title={heartedItems.has(product.id || product.asin) ? "Remove from favorites" : "Add to favorites"}
+                        >
+                          <Heart
+                            size={20}
+                            className={heartedItems.has(product.id || product.asin) ? "text-red-500 fill-red-500" : "text-gray-400"}
+                          />
+                        </button>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Dynamic Prompts */}
+                {message.dynamicPrompts && message.dynamicPrompts.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-xs font-semibold mb-2">Refine your search:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {message.dynamicPrompts.map((prompt: DynamicPrompt, idx: number) => (
+                        <button
+                          key={idx}
+                          onClick={() => handlePromptClick(prompt)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-full text-xs font-medium transition-colors"
+                          disabled={isLoading}
+                        >
+                          <ChevronRight size={14} />
+                          {prompt.text}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

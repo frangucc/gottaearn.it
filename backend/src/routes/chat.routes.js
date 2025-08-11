@@ -24,12 +24,15 @@ router.post('/start', async (req, res) => {
     // Generate unique session ID
     const sessionId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+    // Convert gender to uppercase for Prisma enum
+    const normalizedGender = extractedGender ? extractedGender.toUpperCase() : null;
+
     const session = await chatService.createSession(
       extractedUserId || `user_${Date.now()}`,
       {
         sessionId,
         age: extractedAge,
-        gender: extractedGender,
+        gender: normalizedGender,
         preferences: extractedPreferences,
         initialIntent: userProfile.initialIntent || 'browse'
       }
@@ -38,7 +41,7 @@ router.post('/start', async (req, res) => {
     // Send welcome message using the session ID string, not database session.id
     const welcomeResponse = await chatService.processMessage(
       session.sessionId,
-      "Hi! I'm here to help you discover cool products you might want to earn. What's something you've been wanting lately? 🎮📱⚡"
+      "START_CHAT"  // This will trigger the greeting template
     );
 
     res.json({
@@ -96,7 +99,9 @@ router.post('/message', async (req, res) => {
       content: response.message,  // Also map 'message' to 'content'
       suggestedProducts: localProducts,
       rainforestProducts: rainforestProducts,
-      suggestions: response.suggestions || []
+      suggestions: response.suggestions || [],
+      dynamicPrompts: response.dynamicPrompts || [],  // NEW: Include dynamic prompts
+      searchId: response.searchId                      // NEW: Include search ID for filtering
     };
 
     // If no local products found but AI detected a product mention, search Rainforest API

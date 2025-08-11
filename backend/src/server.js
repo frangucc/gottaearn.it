@@ -11,6 +11,9 @@ import { prisma } from './lib/prisma.js';
 import { jobProcessorService } from './services/job-processor.service.js';
 import productSearchRoutes from './routes/product-search.routes.js';
 import chatRoutes from './routes/chat.routes.js';
+import heartRoutes from './routes/heart.routes.js';
+import filterRoutes from './routes/filter.routes.js';
+import { redisService } from './services/redis.service.js';
 // import { 
 //   // Initialize Sentry for error monitoring
 //   // initSentry(); 
@@ -74,11 +77,11 @@ app.use('/api/v1', (req, res, next) => {
   next();
 });
 
-// Product search routes
+// API Routes
 app.use('/api/v1/products', productSearchRoutes);
-
-// Chat routes
 app.use('/api/v1/chat', chatRoutes);
+app.use('/api/v1', heartRoutes);
+app.use('/api/v1', filterRoutes);
 
 // Basic REST endpoints
 app.get('/api/v1/test', (req, res) => {
@@ -562,6 +565,9 @@ const server = new ApolloServer({
 
 // Start server
 async function startServer() {
+  // Initialize Redis (with fallback to in-memory if not available)
+  await redisService.connect();
+  
   await server.start();
   
   // Apply GraphQL middleware

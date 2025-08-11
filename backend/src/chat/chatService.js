@@ -1,14 +1,63 @@
-import { PrismaClient } from '@prisma/client';
-import { aiSegmentationService } from '../services/ai-segmentation.service.js';
+import aiSegmentationService from '../services/ai-segmentation.service.js';
+import { rainforestService } from '../services/rainforest.service.js';
 import { promptTemplates } from './promptTemplates.js';
-import { productMatcher } from './productMatcher.js';
+import { prisma } from '../lib/prisma.js';
+import { redisService } from '../services/redis.service.js';
+import crypto from 'crypto';
 import { conversationLogger } from './conversationLogger.js';
-
-const prisma = new PrismaClient();
 
 class ChatService {
   constructor() {
     this.sessions = new Map(); // Active session cache
+  }
+
+  /**
+   * Get or create a session for the user
+   */
+  async getOrCreateSession(sessionId) {
+    try {
+      // Try to get from Redis first
+      let session = await redisService.getSession(sessionId);
+      
+      if (!session) {
+        // Create new session
+        session = {
+          sessionId,
+          createdAt: new Date().toISOString(),
+          conversationContext: {
+            category: null,
+            preferences: {},
+            extractedInfo: {}
+          },
+          heartedItems: [],
+          searchHistory: [],
+          lastSearchId: null
+        };
+        
+        await redisService.setSession(sessionId, session);
+        console.log(`📝 Created new session: ${sessionId}`);
+      } else {
+        console.log(`♻️ Retrieved existing session: ${sessionId}`);
+      }
+      
+      return session;
+    } catch (error) {
+      console.error('Error managing session:', error);
+      // Return a basic session on error
+      return {
+        sessionId,
+        conversationContext: {},
+        heartedItems: [],
+        searchHistory: []
+      };
+    }
+  }
+
+  /**
+   * Generate a unique search ID
+   */
+  generateSearchId() {
+    return `search_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   }
 
   /**
@@ -81,7 +130,10 @@ class ChatService {
     let session = null;
     
     try {
-      // Get session context
+      // Get or create session with Redis
+      const redisSession = await this.getOrCreateSession(sessionId);
+      
+      // Get session context from database
       session = await this.getSession(sessionId);
       if (!session) {
         throw new Error(`Session ${sessionId} not found`);
@@ -100,6 +152,7 @@ class ChatService {
       
       // Only search for products if user is actually asking for something specific
       let relevantProducts = [];
+      let searchId = null;
       
       // Don't search products for welcome messages or general chat
       const isWelcomeMessage = userMessage.includes("Hi! I'm here to help you discover");
@@ -107,9 +160,40 @@ class ChatService {
       
       if (!isWelcomeMessage && context.extractedProduct?.productDetected) {
         console.log(`🎯 User requested specific product: ${context.extractedProduct.productName}`);
+        
+        // Generate unique search ID
+        searchId = this.generateSearchId();
+        
+        // Search for products
         relevantProducts = await this.findRelevantProductsWithFallback(context, session);
+        
+        // Cache search results in Redis
+        if (relevantProducts.length > 0) {
+          await redisService.cacheSearchResults(sessionId, searchId, {
+            query: userMessage,
+            extractedProduct: context.extractedProduct,
+            products: relevantProducts,
+            timestamp: new Date().toISOString()
+          });
+          console.log(`💾 Cached ${relevantProducts.length} products with searchId: ${searchId}`);
+        }
+        
+        // Update conversation context with preferences
+        if (context.extractedProduct.brand || context.extractedProduct.category) {
+          await redisService.updateConversationContext(sessionId, {
+            lastCategory: context.extractedProduct.category,
+            lastBrand: context.extractedProduct.brand,
+            lastQuery: userMessage
+          });
+        }
       } else {
         console.log(`💬 General chat - no product search needed`);
+      }
+
+      // Generate dynamic prompts based on results
+      let dynamicPrompts = [];
+      if (relevantProducts.length > 0) {
+        dynamicPrompts = await this.generateDynamicPrompts(relevantProducts, context);
       }
 
       // Generate AI response
@@ -131,7 +215,8 @@ class ChatService {
           contextData: {
             products: relevantProducts.map(p => ({ id: p.id, title: p.title })),
             userSegment: context.userSegment,
-            conversationStage: context.stage
+            conversationStage: context.stage,
+            searchId: searchId
           },
           aiModel: aiResponse.model,
           tokens: aiResponse.tokens,
@@ -156,6 +241,8 @@ class ChatService {
         message: aiResponse.content,
         products: relevantProducts,
         suggestions: aiResponse.suggestions || [],
+        dynamicPrompts: dynamicPrompts,  // NEW: Include dynamic prompts
+        searchId: searchId,               // NEW: Include search ID for filtering
         messageId: aiMessageRecord.id,
         // Debug information
         extractedProduct: context.extractedProduct,
@@ -408,6 +495,121 @@ class ChatService {
       console.error('❌ Error in isBrowsingQuery:', error);
       return false; // Default to non-browsing on error
     }
+  }
+
+  /**
+   * Generate dynamic prompts based on search results
+   */
+  async generateDynamicPrompts(products, context) {
+    try {
+      if (!products || products.length === 0) return [];
+      
+      // Analyze products to find common patterns
+      const priceRanges = this.analyzePriceRanges(products);
+      const themes = this.extractThemes(products);
+      const brands = [...new Set(products.map(p => p.brand).filter(Boolean))];
+      
+      const prompts = [];
+      
+      // Price-based prompts
+      if (priceRanges.under50.length > 0 && priceRanges.over50.length > 0) {
+        prompts.push({
+          text: `Show me options under $${Math.ceil(priceRanges.median)}`,
+          action: 'filter_price',
+          value: { max: Math.ceil(priceRanges.median) }
+        });
+      }
+      
+      if (priceRanges.under100.length > 3) {
+        prompts.push({
+          text: "Focus on budget-friendly options",
+          action: 'filter_price',
+          value: { max: 100 }
+        });
+      }
+      
+      // Theme-based prompts
+      if (themes.length > 1) {
+        const topTheme = themes[0];
+        prompts.push({
+          text: `Show more ${topTheme} themed items`,
+          action: 'filter_theme',
+          value: { theme: topTheme }
+        });
+      }
+      
+      // Brand-based prompts
+      if (brands.length > 1) {
+        const topBrand = brands[0];
+        prompts.push({
+          text: `Focus on ${topBrand} products`,
+          action: 'filter_brand',
+          value: { brand: topBrand }
+        });
+      }
+      
+      // Generic helpful prompts
+      prompts.push({
+        text: "Show my hearted items",
+        action: 'show_hearted',
+        value: {}
+      });
+      
+      // Limit to 4 prompts max
+      return prompts.slice(0, 4);
+    } catch (error) {
+      console.error('Error generating dynamic prompts:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Analyze price ranges in products
+   */
+  analyzePriceRanges(products) {
+    const prices = products.map(p => p.price || 0).filter(p => p > 0).sort((a, b) => a - b);
+    
+    if (prices.length === 0) {
+      return { under50: [], under100: [], over50: [], median: 0 };
+    }
+    
+    const median = prices[Math.floor(prices.length / 2)];
+    
+    return {
+      under50: products.filter(p => p.price && p.price < 50),
+      under100: products.filter(p => p.price && p.price < 100),
+      over50: products.filter(p => p.price && p.price >= 50),
+      median
+    };
+  }
+
+  /**
+   * Extract themes from product titles and descriptions
+   */
+  extractThemes(products) {
+    const themeWords = {};
+    
+    products.forEach(product => {
+      const text = `${product.title} ${product.description || ''}`.toLowerCase();
+      
+      // Common themes to look for
+      const themes = [
+        'star wars', 'marvel', 'disney', 'technic', 'city', 'friends',
+        'gaming', 'wireless', 'pro', 'mini', 'classic', 'retro',
+        'educational', 'creative', 'building', 'racing', 'adventure'
+      ];
+      
+      themes.forEach(theme => {
+        if (text.includes(theme)) {
+          themeWords[theme] = (themeWords[theme] || 0) + 1;
+        }
+      });
+    });
+    
+    // Sort by frequency
+    return Object.entries(themeWords)
+      .sort((a, b) => b[1] - a[1])
+      .map(([theme]) => theme);
   }
 
   /**
