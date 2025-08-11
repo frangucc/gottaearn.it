@@ -68,7 +68,7 @@ const ChatDebug: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           userAge: 25,
-          userGender: 'male'
+          userGender: 'MALE'
         })
       });
 

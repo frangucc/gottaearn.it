@@ -24,15 +24,12 @@ router.post('/start', async (req, res) => {
     // Generate unique session ID
     const sessionId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Convert gender to uppercase for Prisma enum
-    const normalizedGender = extractedGender ? extractedGender.toUpperCase() : null;
-
     const session = await chatService.createSession(
       extractedUserId || `user_${Date.now()}`,
       {
         sessionId,
         age: extractedAge,
-        gender: normalizedGender,
+        gender: extractedGender,
         preferences: extractedPreferences,
         initialIntent: userProfile.initialIntent || 'browse'
       }
@@ -41,7 +38,7 @@ router.post('/start', async (req, res) => {
     // Send welcome message using the session ID string, not database session.id
     const welcomeResponse = await chatService.processMessage(
       session.sessionId,
-      "START_CHAT"  // This will trigger the greeting template
+      "Hi! I'm here to help you discover cool products you might want to earn. What's something you've been wanting lately? 🎮📱⚡"
     );
 
     res.json({

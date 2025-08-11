@@ -1,6 +1,7 @@
 import aiSegmentationService from '../services/ai-segmentation.service.js';
 import { rainforestService } from '../services/rainforest.service.js';
 import { promptTemplates } from './promptTemplates.js';
+import { productMatcher } from './productMatcher.js';
 import { prisma } from '../lib/prisma.js';
 import { redisService } from '../services/redis.service.js';
 import crypto from 'crypto';
@@ -130,9 +131,6 @@ class ChatService {
     let session = null;
     
     try {
-      // Get or create session with Redis
-      const redisSession = await this.getOrCreateSession(sessionId);
-      
       // Get session context from database
       session = await this.getSession(sessionId);
       if (!session) {
@@ -167,24 +165,15 @@ class ChatService {
         // Search for products
         relevantProducts = await this.findRelevantProductsWithFallback(context, session);
         
-        // Cache search results in Redis
+        // Log search results
         if (relevantProducts.length > 0) {
-          await redisService.cacheSearchResults(sessionId, searchId, {
-            query: userMessage,
-            extractedProduct: context.extractedProduct,
-            products: relevantProducts,
-            timestamp: new Date().toISOString()
-          });
-          console.log(`💾 Cached ${relevantProducts.length} products with searchId: ${searchId}`);
+          console.log(`📦 Found ${relevantProducts.length} products for searchId: ${searchId}`);
         }
         
         // Update conversation context with preferences
         if (context.extractedProduct.brand || context.extractedProduct.category) {
-          await redisService.updateConversationContext(sessionId, {
-            lastCategory: context.extractedProduct.category,
-            lastBrand: context.extractedProduct.brand,
-            lastQuery: userMessage
-          });
+          // Store preferences in session context (database)
+          console.log(`📝 Storing preferences - Category: ${context.extractedProduct.category}, Brand: ${context.extractedProduct.brand}`);
         }
       } else {
         console.log(`💬 General chat - no product search needed`);
@@ -421,6 +410,11 @@ class ChatService {
     }
     
     // No local products - fallback to Rainforest API if product was detected
+    console.log('🔍 DEBUG: Checking Rainforest fallback conditions:');
+    console.log('  - localProducts.length:', localProducts.length);
+    console.log('  - productDetected:', context.extractedProduct?.productDetected);
+    console.log('  - extractedProduct:', JSON.stringify(context.extractedProduct));
+    
     if (context.extractedProduct?.productDetected) {
       console.log('🌧️ No local matches - falling back to Rainforest API...');
       return await this.searchRainforestAPI(context.extractedProduct, session);

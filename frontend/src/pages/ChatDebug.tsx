@@ -77,11 +77,9 @@ const ChatDebug: React.FC = () => {
       const response = await fetch('http://localhost:9000/api/v1/chat/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userAge: age,
-          userGender: gender,
-          preferences: {},
-          initialIntent: 'browse'
+        body: JSON.stringify({ 
+          userAge: 25,
+          userGender: 'MALE'
         })
       });
 
